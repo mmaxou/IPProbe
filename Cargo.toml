@@ -1,0 +1,18 @@
+[package]
+name = "ipprobe"
+version = "0.1.0"
+edition = "2021"
+description = "IPProbe - 自动探测本机 IPv4/IPv6 地址的 Windows 桌面应用(egui)"
+license = "MIT"
+
+[[bin]]
+name = "IPProbe"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.37"
+if-addrs = "0.15"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
