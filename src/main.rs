@@ -3,8 +3,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod autostart;
 mod netinfo;
-
+mod settings;
+mod tray;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
