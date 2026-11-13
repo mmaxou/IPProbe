@@ -142,9 +142,9 @@ fn outbound_from_targets(bind_addr: &str, targets: &[&str]) -> Option<IpAddr> {
 /// 返回文本,失败返回 None。
 pub fn public_outbound_ipv4() -> Option<String> {
     const APIS: &[&str] = &[
-        "4.ipw.cn",
-        "api.ipify.org",
         "members.3322.org/dyndns/getip",
+        "api.ip.sb/ip",
+        "v4.ident.me",
     ];
     for host_path in APIS {
         if let Some(ip) = http_get_text(host_path, 80) {
@@ -154,7 +154,7 @@ pub fn public_outbound_ipv4() -> Option<String> {
     None
 }
 
-/// 发一个极小明文 HTTP GET,返回响应体的第一行(期望为 IP 文本)
+/// 发一个极小明文 HTTP GET,返回响应体中的 IPv4 文本(只接受纯 IPv4)。
 fn http_get_text(host_path: &str, port: u16) -> Option<String> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
@@ -176,15 +176,56 @@ fn http_get_text(host_path: &str, port: u16) -> Option<String> {
 
     let mut buf = String::new();
     sock.read_to_string(&mut buf).ok()?;
-    let body = buf.split("\r\n\r\n").nth(1)?;
+    let (head, body_raw) = buf.split_once("\r\n\r\n")?;
+
+    // 部分服务(如 3322)使用 chunked 传输编码,需要解码。
+    let body: String = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        String::from_utf8_lossy(&decode_chunked(body_raw.as_bytes())?).into_owned()
+    } else {
+        body_raw.to_string()
+    };
+
     let line = body.lines().find(|l| !l.trim().is_empty())?;
     let text = line.trim().to_string();
-    if text.parse::<IpAddr>().is_ok() {
+    // 只接受 IPv4,避免 IPv6 文本混入 IPv4 字段。
+    if text.parse::<std::net::Ipv4Addr>().is_ok() {
         Some(text)
     } else {
         None
     }
 }
+
+/// HTTP chunked 传输编码解码(只解主体部分)。
+/// 输入为去掉头部后的原始字节,返回解码后的 Body。
+fn decode_chunked(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        let line_end = bytes[i..].iter().position(|&b| b == b'\n')?;
+        let size_line = std::str::from_utf8(&bytes[i..i + line_end]).ok()?;
+        let size_part = size_line.trim().split(';').next().unwrap_or("");
+        let size = usize::from_str_radix(size_part.trim(), 16).ok()?;
+        i += line_end + 1; // 跳过本行(含 \n)
+        if size == 0 {
+            return Some(out); // 0 块结束
+        }
+        if i + size > bytes.len() {
+            return None;
+        }
+        out.extend_from_slice(&bytes[i..i + size]);
+        i += size;
+        // 跳过块尾 CRLF(或仅 LF)
+        if i + 1 < bytes.len() && bytes[i] == b'\r' && bytes[i + 1] == b'\n' {
+            i += 2;
+        } else if i < bytes.len() && bytes[i] == b'\n' {
+            i += 1;
+        }
+    }
+}
+
 fn classify(ip: IpAddr) -> AddrScope {
     match ip {
         IpAddr::V4(v4) => {
@@ -249,6 +290,21 @@ mod tests {
         assert_eq!(classify(IpAddr::V6("fe80::1".parse().unwrap())), AddrScope::LinkLocal);
         assert_eq!(classify(IpAddr::V6("fd12:3456::1".parse().unwrap())), AddrScope::UniqueLocal);
         assert_eq!(classify(IpAddr::V6("2001:4860:4860::8888".parse().unwrap())), AddrScope::Public);
+    }
+
+    #[test]
+    fn chunked_decoding_works() {
+        // 模拟 3322.org chunked 响应体:块大小 0x10 + 数据 + 0 终止块
+        let raw = b"10\r\n221.225.192.221\n\r\n0\r\n\r\n";
+        let decoded = decode_chunked(raw).unwrap();
+        assert_eq!(decoded, b"221.225.192.221\n");
+
+        // 多块
+        let raw2 = b"5\r\n12345\r\n6\r\n678901\r\n0\r\n\r\n";
+        assert_eq!(decode_chunked(raw2).unwrap(), b"12345678901");
+
+        // 损坏数据返回 None
+        assert!(decode_chunked(b"zz\r\n").is_none());
     }
 
     #[test]

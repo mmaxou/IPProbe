@@ -54,6 +54,7 @@ impl Default for IPProbeApp {
         };
         app.sync_autostart_on_startup();
         app.do_scan();
+        app.refresh_public_ipv4();
         app
     }
 }
@@ -102,6 +103,18 @@ impl IPProbeApp {
         if !fresh {
             self.public_v4 = netinfo::public_outbound_ipv4();
             self.last_pub_fetch = Some(Instant::now());
+        }
+    }
+
+    /// “默认出口 IPv4”展示文本:优先公网出口 IP(对外可见地址);
+    /// 公网查询失败时回退到本地接口地址并标注“(本地)”。
+    fn egress_v4_label(&self) -> String {
+        if let Some(pub_ip) = self.public_v4.as_deref() {
+            pub_ip.to_string()
+        } else if let Some(local) = self.outbound_v4 {
+            format!("{local} (本地)")
+        } else {
+            "无".to_owned()
         }
     }
 
@@ -310,19 +323,12 @@ impl eframe::App for IPProbeApp {
                     self.summary.ipv6_count
                 ));
                 ui.separator();
-                let v4 = self
-                    .outbound_v4
-                    .map(|a| a.to_string())
-                    .unwrap_or_else(|| "无".to_owned());
+                let v4 = self.egress_v4_label();
                 let v6 = self
                     .outbound_v6
                     .map(|a| a.to_string())
                     .unwrap_or_else(|| "无".to_owned());
                 ui.label(format!("默认出口: IPv4 {v4} · IPv6 {v6}"));
-                ui.label(format!(
-                    "公网出口: {}",
-                    self.public_v4.as_deref().unwrap_or("无")
-                ));
                 ui.separator();
                 ui.label(format!("上次扫描 {}", self.last_scan_text()));
             });
