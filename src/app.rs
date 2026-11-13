@@ -32,6 +32,10 @@ pub struct IPProbeApp {
     requested_quit: bool,
     /// 上一个扫描时间(与 auto_refresh 共用 last_scan,这里用于静默探测判断)。
     last_silent_scan: Option<Instant>,
+    /// Bark 上次成功发送的日期键(yyyy-mm-dd),避免同一天重复发送。
+    last_bark_date: Option<String>,
+    /// Bark 最近一次发送/测试结果,用于设置窗口反馈。
+    bark_feedback: Option<String>,
 }
 
 impl Default for IPProbeApp {
@@ -51,6 +55,8 @@ impl Default for IPProbeApp {
             settings_open: false,
             requested_quit: false,
             last_silent_scan: None,
+            last_bark_date: None,
+            bark_feedback: None,
         };
         app.sync_autostart_on_startup();
         app.do_scan();
@@ -175,6 +181,68 @@ impl IPProbeApp {
         ctx.request_repaint_after(interval);
     }
 
+    /// Bark 每日定时通知:到达设定时间且当日未发送时,发送当前探测到的全部 IP。
+    fn maybe_bark_report(&mut self) {
+        if !self.settings.bark_enabled {
+            return;
+        }
+        let Some(now) = crate::bark::local_now() else {
+            return;
+        };
+        if now.hour != self.settings.bark_hour || now.minute != self.settings.bark_minute {
+            return;
+        }
+        if self.last_bark_date.as_deref() == Some(now.date_key.as_str()) {
+            return; // 当日已发送
+        }
+
+        // 发送前确保数据最新
+        self.do_scan();
+        self.refresh_public_ipv4();
+        let ips = self.collect_ips_text();
+        match crate::bark::send(
+            &self.settings.bark_url,
+            &self.settings.bark_token,
+            "IPProbe 网络探测",
+            &ips,
+        ) {
+            Ok(()) => {
+                self.last_bark_date = Some(now.date_key.clone());
+                self.bark_feedback = Some(format!(
+                    "已于 {}:{:02} 发送成功",
+                    now.hour, now.minute
+                ));
+            }
+            Err(e) => {
+                self.bark_feedback = Some(format!("Bark 发送失败: {e}"));
+            }
+        }
+    }
+
+    /// 汇总探测到的所有 IP 地址(各接口 + 默认出口 + 公网出口),作为通知正文。
+    fn collect_ips_text(&self) -> String {
+        let mut lines = Vec::new();
+        for iface in &self.ifaces {
+            for a in &iface.addrs {
+                lines.push(format!("{} [{}]: {}", iface.name, a.scope.label(), a.addr));
+            }
+        }
+        if let Some(public) = &self.public_v4 {
+            lines.push(format!("公网出口 IPv4: {public}"));
+        }
+        if let Some(a) = self.outbound_v4 {
+            lines.push(format!("默认出口(接口) IPv4: {a}"));
+        }
+        if let Some(a) = self.outbound_v6 {
+            lines.push(format!("默认出口 IPv6: {a}"));
+        }
+        if lines.is_empty() {
+            "未检测到 IP 地址".to_owned()
+        } else {
+            lines.join("\n")
+        }
+    }
+
     /// 保存设置并同步自启动状态。
     fn apply_settings(&mut self) {
         settings::save(&self.settings);
@@ -237,6 +305,50 @@ impl IPProbeApp {
                 ui.checkbox(&mut self.settings.minimize_to_tray, "最小化时隐藏到托盘");
                 ui.add_space(12.0);
 
+                ui.heading("Bark 通知(iOS)");
+                ui.checkbox(&mut self.settings.bark_enabled, "启用每日 IP 通知");
+                ui.horizontal(|ui| {
+                    ui.label("服务地址");
+                    ui.text_edit_singleline(&mut self.settings.bark_url);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("设备 Key");
+                    ui.text_edit_singleline(&mut self.settings.bark_token);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("每天");
+                    egui::ComboBox::from_id_salt("bark_hour")
+                        .selected_text(format!("{} 点", self.settings.bark_hour))
+                        .show_ui(ui, |ui| {
+                            for h in 0..=23 {
+                                ui.selectable_value(&mut self.settings.bark_hour, h, format!("{h} 点"));
+                            }
+                        });
+                    egui::ComboBox::from_id_salt("bark_minute")
+                        .selected_text(format!("{} 分", self.settings.bark_minute))
+                        .show_ui(ui, |ui| {
+                            for m in (0..60).step_by(5) {
+                                ui.selectable_value(&mut self.settings.bark_minute, m, format!("{m} 分"));
+                            }
+                        });
+                });
+                if ui.button("发送测试通知").clicked() {
+                    let (base, token) = (
+                        self.settings.bark_url.clone(),
+                        self.settings.bark_token.clone(),
+                    );
+                    self.bark_feedback = Some(
+                        match crate::bark::send(&base, &token, "IPProbe 测试", "这是一条来自 IPProbe 的测试通知") {
+                            Ok(()) => "测试通知发送成功".to_owned(),
+                            Err(e) => format!("发送失败: {e}"),
+                        },
+                    );
+                }
+                if let Some(feedback) = &self.bark_feedback {
+                    ui.colored_label(egui::Color32::LIGHT_BLUE, feedback);
+                }
+                ui.add_space(12.0);
+
                 if ui.button("保存设置").clicked() {
                     self.apply_settings();
                     self.settings_open = false;
@@ -273,6 +385,7 @@ impl eframe::App for IPProbeApp {
 
         // —— 静默探测(Auto 刷新合并) ——
         self.maybe_silent_probe(&ctx);
+        self.maybe_bark_report();
         if self.settings.auto_refresh
             && self
                 .last_scan

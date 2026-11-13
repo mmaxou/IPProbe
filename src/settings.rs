@@ -27,6 +27,21 @@ pub struct AppSettings {
     pub auto_refresh: bool,
     /// 自动刷新间隔(秒)。
     pub interval_secs: u64,
+
+    /// 是否启用 Bark 通知。
+    #[serde(default)]
+    pub bark_enabled: bool,
+    /// Bark 服务地址(形如 https://api.day.app,不带尾部斜杠)。
+    #[serde(default = "default_bark_url")]
+    pub bark_url: String,
+    #[serde(default)]
+    pub bark_token: String,
+    /// 每日通知发送小时(0-23),与 bark_minute 组合。
+    #[serde(default)]
+    pub bark_hour: u32,
+    /// 每日通知发送分钟(0-59)。
+    #[serde(default)]
+    pub bark_minute: u32,
 }
 
 impl Default for AppSettings {
@@ -38,11 +53,21 @@ impl Default for AppSettings {
             silent_probe: true,
             auto_refresh: true,
             interval_secs: 5,
+            bark_enabled: false,
+            bark_url: "https://api.day.app".to_owned(),
+            bark_token: String::new(),
+            bark_hour: 8,
+            bark_minute: 0,
         }
     }
 }
 
-/// 获取应用数据目录(用户主目录 / .ipprobe)。
+/// Bark 服务地址默认值(公共服务器)。
+fn default_bark_url() -> String {
+    "https://api.day.app".to_owned()
+}
+
+/// 从磁盘加载设置;文件不存在或解析失败时回退默认值。
 pub fn data_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .map(PathBuf::from)
@@ -95,6 +120,11 @@ mod tests {
             silent_probe: false,
             auto_refresh: true,
             interval_secs: 10,
+            bark_enabled: true,
+            bark_url: "https://bark.example.com".to_owned(),
+            bark_token: "test-key".to_owned(),
+            bark_hour: 9,
+            bark_minute: 30,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: AppSettings = serde_json::from_str(&json).unwrap();
@@ -104,6 +134,11 @@ mod tests {
         assert_eq!(s.silent_probe, back.silent_probe);
         assert_eq!(s.auto_refresh, back.auto_refresh);
         assert_eq!(s.interval_secs, back.interval_secs);
+        assert_eq!(s.bark_enabled, back.bark_enabled);
+        assert_eq!(s.bark_url, back.bark_url);
+        assert_eq!(s.bark_token, back.bark_token);
+        assert_eq!(s.bark_hour, back.bark_hour);
+        assert_eq!(s.bark_minute, back.bark_minute);
     }
 
     #[test]
@@ -115,5 +150,18 @@ mod tests {
         assert!(back.minimize_to_tray);
         assert!(back.silent_probe);
         assert!(back.auto_refresh);
+        assert!(!back.bark_enabled);
+        assert_eq!(back.bark_hour, 8);
+        assert_eq!(back.bark_minute, 0);
+    }
+
+    #[test]
+    fn old_json_without_bark_fields_still_loads() {
+        // 兼容旧版 settings.json(没有 bark_* 字段)
+        let old = r#"{"autostart":false,"close_to_tray":true,"minimize_to_tray":true,"silent_probe":true,"auto_refresh":true,"interval_secs":5}"#;
+        let s: AppSettings = serde_json::from_str(old).unwrap();
+        assert!(!s.bark_enabled);
+        assert_eq!(s.bark_url, "https://api.day.app");
+        assert!(s.bark_token.is_empty());
     }
 }

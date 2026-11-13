@@ -4,6 +4,7 @@
 
 mod app;
 mod autostart;
+mod bark;
 mod netinfo;
 mod settings;
 mod tray;
