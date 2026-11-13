@@ -22,6 +22,8 @@ fn main() -> eframe::Result<()> {
         app::APP_TITLE,
         options,
         Box::new(|cc| {
+            // 跟随 Windows 系统深浅色模式(浅色/深色自动切换)
+            cc.egui_ctx.set_theme(egui::ThemePreference::System);
             setup_cjk_font(&cc.egui_ctx);
             Ok(Box::new(app::IPProbeApp::default()))
         }),
