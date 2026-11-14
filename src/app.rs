@@ -231,7 +231,7 @@ impl State {
     /// 同步系统主题。
     fn sync_theme(&mut self) {
         if let Some(dark) = Self::system_dark() {
-            self.theme = if dark { Theme::Dark } else { Theme::Light };
+            self.theme = crate::ui::theme(dark);
         }
     }
 
@@ -549,20 +549,31 @@ impl State {
     fn main_view(&self) -> Element<'_, Message> {
         let top = row![
             text("IPProbe").size(20),
-            button("刷新").on_press(Message::Refresh),
+            button("刷新")
+                .on_press(Message::Refresh)
+                .style(crate::ui::button_ghost),
             checkbox("自动刷新", self.settings.auto_refresh)
-                .on_toggle(Message::ToggleAutoRefresh),
+                .on_toggle(Message::ToggleAutoRefresh)
+                .style(crate::ui::check),
             pick_list(
                 INTERVAL_CHOICES,
                 Some(self.settings.interval_secs),
                 Message::IntervalChanged
-            ),
+            )
+            .style(crate::ui::pick)
+            .menu_style(crate::ui::menu),
             Space::with_width(Length::Fill),
-            button("设置").on_press(Message::OpenSettings),
+            button("设置")
+                .on_press(Message::OpenSettings)
+                .style(crate::ui::button_ghost),
         ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center)
-        .padding(8);
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+
+        let top = container(top)
+            .width(Length::Fill)
+            .padding([14, 18])
+            .style(crate::ui::panel);
 
         let v4 = self.egress_v4_label();
         let v6 = self
@@ -591,15 +602,19 @@ impl State {
         };
         let bottom = container(text(bottom_text).size(12))
             .width(Length::Fill)
-            .padding(8);
+            .padding([10, 18])
+            .style(crate::ui::panel);
 
-        let list = scrollable(self.interface_list()).height(Length::Fill);
+        let list = scrollable(self.interface_list())
+            .height(Length::Fill)
+            .style(crate::ui::scroll);
 
-        let content = column![top, list, bottom];
+        let content = column![top, list, bottom].spacing(14).padding(16);
 
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(crate::ui::root)
             .into()
     }
 
@@ -653,7 +668,12 @@ impl State {
                 .spacing(8));
             }
 
-            col = col.push(container(card).padding(6).style(iced::widget::container::rounded_box));
+            col = col.push(
+                container(card)
+                    .width(Length::Fill)
+                    .padding(12)
+                    .style(crate::ui::card),
+            );
         }
 
         col.into()
@@ -661,77 +681,134 @@ impl State {
 
     /// 设置页。
     fn settings_view(&self) -> Element<'_, Message> {
-        let mut content = Column::new().spacing(12).padding(16);
+        let mut content = Column::new().spacing(14).padding(16);
 
         content = content.push(text("设置").size(24));
 
-        content = content.push(text("常规").size(18));
-        content = content.push(
+        // 常规
+        let general = column![
+            text("常规").size(16),
             row![
                 checkbox("自动刷新", self.settings.auto_refresh)
-                    .on_toggle(Message::ToggleAutoRefresh),
+                    .on_toggle(Message::ToggleAutoRefresh)
+                    .style(crate::ui::check),
                 text("刷新间隔"),
                 pick_list(
                     INTERVAL_CHOICES,
                     Some(self.settings.interval_secs),
                     Message::IntervalChanged
-                ),
+                )
+                .style(crate::ui::pick)
+                .menu_style(crate::ui::menu),
             ]
-            .spacing(8),
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+        content = content.push(
+            container(general)
+                .width(Length::Fill)
+                .padding([16, 18])
+                .style(crate::ui::panel),
         );
 
-        content = content.push(text("启动与后台").size(18));
-        content = content.push(
+        // 启动与后台
+        let startup = column![
+            text("启动与后台").size(16),
             row![
                 checkbox("开机自启动", self.settings.autostart)
-                    .on_toggle(Message::ToggleAutostart),
+                    .on_toggle(Message::ToggleAutostart)
+                    .style(crate::ui::check),
                 checkbox("后台静默探测", self.settings.silent_probe)
-                    .on_toggle(Message::ToggleSilentProbe),
+                    .on_toggle(Message::ToggleSilentProbe)
+                    .style(crate::ui::check),
             ]
-            .spacing(16),
+            .spacing(20)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+        content = content.push(
+            container(startup)
+                .width(Length::Fill)
+                .padding([16, 18])
+                .style(crate::ui::panel),
         );
 
-        content = content.push(text("窗口行为").size(18));
-        content = content.push(
+        // 窗口行为
+        let window = column![
+            text("窗口行为").size(16),
             row![
                 checkbox("关闭时缩小到托盘", self.settings.close_to_tray)
-                    .on_toggle(Message::ToggleCloseToTray),
+                    .on_toggle(Message::ToggleCloseToTray)
+                    .style(crate::ui::check),
                 checkbox("最小化时隐藏到托盘", self.settings.minimize_to_tray)
-                    .on_toggle(Message::ToggleMinimizeToTray),
+                    .on_toggle(Message::ToggleMinimizeToTray)
+                    .style(crate::ui::check),
             ]
-            .spacing(16),
+            .spacing(20)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+        content = content.push(
+            container(window)
+                .width(Length::Fill)
+                .padding([16, 18])
+                .style(crate::ui::panel),
         );
 
-        content = content.push(text("Bark 通知(iOS)").size(18));
-        content = content.push(
+        // Bark 通知
+        let bark = column![
+            text("Bark 通知(iOS)").size(16),
             checkbox("启用每日 IP 通知", self.settings.bark_enabled)
-                .on_toggle(Message::ToggleBarkEnabled),
-        );
-        content = content.push(
-            row![text("服务地址"), text_input("https://api.day.app", &self.settings.bark_url)
-                .on_input(Message::BarkUrlChanged),]
-            .spacing(8),
-        );
-        content = content.push(
-            row![text("设备 Key"), text_input("Bark 设备 Key", &self.settings.bark_token)
-                .on_input(Message::BarkTokenChanged),]
-            .spacing(8),
-        );
-        content = content.push(
+                .on_toggle(Message::ToggleBarkEnabled)
+                .style(crate::ui::check),
+            row![
+                text("服务地址"),
+                text_input("https://api.day.app", &self.settings.bark_url)
+                    .on_input(Message::BarkUrlChanged)
+                    .width(Length::Fill)
+                    .style(crate::ui::input),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                text("设备 Key"),
+                text_input("Bark 设备 Key", &self.settings.bark_token)
+                    .on_input(Message::BarkTokenChanged)
+                    .width(Length::Fill)
+                    .style(crate::ui::input),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
             row![
                 text("每天"),
-                pick_list(BARK_HOURS, Some(self.settings.bark_hour), Message::BarkHourChanged),
+                pick_list(BARK_HOURS, Some(self.settings.bark_hour), Message::BarkHourChanged)
+                    .style(crate::ui::pick)
+                    .menu_style(crate::ui::menu),
                 text("点"),
                 pick_list(
                     BARK_MINUTES,
                     Some(self.settings.bark_minute),
                     Message::BarkMinuteChanged
-                ),
+                )
+                .style(crate::ui::pick)
+                .menu_style(crate::ui::menu),
                 text("分"),
-                button("发送测试通知").on_press(Message::BarkTestSend),
+                button("发送测试通知")
+                    .on_press(Message::BarkTestSend)
+                    .style(crate::ui::button_ghost),
             ]
-            .spacing(8),
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+        ]
+        .spacing(12);
+        content = content.push(
+            container(bark)
+                .width(Length::Fill)
+                .padding([16, 18])
+                .style(crate::ui::panel),
         );
+
         if let Some(feedback) = &self.bark_feedback {
             content = content.push(text(feedback).size(13));
         }
@@ -739,8 +816,12 @@ impl State {
         content = content.push(Space::with_height(8));
 
         let actions = row![
-            button("保存设置").on_press(Message::SaveSettings),
-            button("放弃并返回").on_press(Message::CloseSettings),
+            button("保存设置")
+                .on_press(Message::SaveSettings)
+                .style(crate::ui::button_primary),
+            button("放弃并返回")
+                .on_press(Message::CloseSettings)
+                .style(crate::ui::button_ghost),
         ]
         .spacing(12);
 
@@ -749,6 +830,7 @@ impl State {
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(crate::ui::root)
             .into()
     }
 

@@ -10,6 +10,7 @@ mod bark;
 mod netinfo;
 mod settings;
 mod tray;
+mod ui;
 
 use iced::{Font, Size};
 
