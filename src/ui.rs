@@ -1,14 +1,14 @@
 //! IPProbe 现代 UI 样式:自定义主题与控件样式。
 //!
-//! 统一采用“圆角 + 半透明面板 + 柔和阴影 + 微妙渐变背景”的设计语言:
-//! - 主题通过 `Theme::custom` 自定义调色板(区分深浅色);
-//! - 所有自带控件(按钮/输入框/下拉/复选框/滚动条)均提供定制样式;
-//! - 所有颜色均带 alpha 通道,叠加在窗口渐变背景上呈现通透感。
+//! 设计语言:圆角 + 分层明暗 + 柔和描边,保持现代通透感。
+//!
+//! 实现约束(重要):softbuffer 后端采用“损坏区增量重绘”,半透明背景与阴影
+//! 会在悬停重绘时反复叠加并拖影,且全窗渐变/大模糊开销高导致卡顿。
+//! 因此根背景、面板、卡片与控件一律使用**不透明**叠层,悬停仅做纯色变化,
+//! 阴影全部移除。保持圆角与层次感的同时避免渲染伪影。
 
-use iced::gradient::{Gradient, Linear};
 use iced::widget::{button, checkbox, container, pick_list, scrollable, text_input};
-use iced::{Background, Border, Color, Shadow, Theme, Vector};
-use std::f32::consts::FRAC_PI_2;
+use iced::{Background, Border, Color, Shadow, Theme};
 
 // ---------------------------------------------------------------------------
 // 主题与调色板
@@ -31,7 +31,7 @@ pub fn theme(dark: bool) -> Theme {
         Theme::custom(
             "IPProbe Light".to_string(),
             iced::theme::Palette {
-                background: color(0xF2F5FB),
+                background: color(0xF3F6FB),
                 text: color(0x1E293B),
                 primary: color(0x4F6EF7),
                 success: color(0x129A50),
@@ -50,7 +50,7 @@ fn color(hex: u32) -> Color {
     )
 }
 
-/// 带透明度颜色。
+/// 带透明度颜色(仅用于细描边/选中高亮等一次性绘制)。
 fn color_a(hex: u32, a: f32) -> Color {
     Color::from_rgba8(
         ((hex >> 16) & 0xFF) as u8,
@@ -68,14 +68,15 @@ fn is_dark(theme: &Theme) -> bool {
 
 /// 两套配色(深/浅)的控制颜色。
 struct C {
-    surface: Color,       // 半透明面板底
-    surface_strong: Color, // 更“实”的面板底(卡片)
+    panel_bg: Color,        // 面板/输入框等控件底(不透明)
+    card_bg: Color,         // 卡片底(不透明)
     border: Color,
     border_focus: Color,
     text_muted: Color,
+    primary_hover: Color,
+    primary_pressed: Color,
     scroller: Color,
     rail: Color,
-    shadow: Color,
     overlay_bg: Color,
     overlay_selected: Color,
 }
@@ -83,28 +84,30 @@ struct C {
 fn colors(dark: bool) -> C {
     if dark {
         C {
-            surface: color_a(0xFFFFFF, 0.07),
-            surface_strong: color_a(0xFFFFFF, 0.11),
+            panel_bg: color(0x1C212B),
+            card_bg: color(0x222936),
             border: color_a(0xFFFFFF, 0.10),
             border_focus: color(0x6C8CFF),
             text_muted: color_a(0xEAEEF5, 0.55),
-            scroller: color_a(0xFFFFFF, 0.32),
+            primary_hover: color(0x7E9AFF),
+            primary_pressed: color(0x5B76E8),
+            scroller: color_a(0xFFFFFF, 0.30),
             rail: color_a(0xFFFFFF, 0.06),
-            shadow: color_a(0x000000, 0.30),
-            overlay_bg: color_a(0x1E232E, 0.96),
+            overlay_bg: color(0x1E232E),
             overlay_selected: color_a(0x6C8CFF, 0.24),
         }
     } else {
         C {
-            surface: color_a(0xFFFFFF, 0.55),
-            surface_strong: color_a(0xFFFFFF, 0.72),
+            panel_bg: color(0xFFFFFF),
+            card_bg: color(0xFAFBFE),
             border: color_a(0x0B1220, 0.08),
             border_focus: color(0x4F6EF7),
             text_muted: color_a(0x1E293B, 0.52),
+            primary_hover: color(0x425EE0),
+            primary_pressed: color(0x3753D0),
             scroller: color_a(0x0B1220, 0.26),
             rail: color_a(0x0B1220, 0.05),
-            shadow: color_a(0x0B1220, 0.08),
-            overlay_bg: color_a(0xFFFFFF, 0.97),
+            overlay_bg: color(0xFFFFFF),
             overlay_selected: color_a(0x4F6EF7, 0.14),
         }
     }
@@ -123,53 +126,41 @@ fn border(color: Color, width: f32, radius: f32) -> Border {
 // 容器样式
 // ---------------------------------------------------------------------------
 
-/// 窗口根容器:微妙垂直渐变 + 低透明度,营造现代质感。
+/// 窗口根容器:不透明主题底色,承载所有分层。
 pub fn root(theme: &Theme) -> container::Style {
     let dark = is_dark(theme);
-    let (top, bottom) = if dark {
-        (color_a(0x1B212C, 0.92), color_a(0x10131A, 0.95))
+    let bg = if dark {
+        color(0x14171E)
     } else {
-        (color_a(0xEAF0FA, 0.90), color_a(0xF7F9FE, 0.95))
+        color(0xF3F6FB)
     };
     container::Style {
         text_color: None,
-        background: Some(Background::Gradient(Gradient::Linear(
-            Linear::new(FRAC_PI_2)
-                .add_stop(0.0, top)
-                .add_stop(1.0, bottom),
-        ))),
+        background: Some(Background::Color(bg)),
         border: Border::default(),
         shadow: Shadow::default(),
     }
 }
 
-/// 通用半透明圆角面板(顶栏 / 分组设置区 / 底部状态栏)。
+/// 通用圆角面板(顶栏 / 分组设置区 / 底部状态栏)。
 pub fn panel(theme: &Theme) -> container::Style {
     let c = colors(is_dark(theme));
     container::Style {
         text_color: None,
-        background: Some(Background::Color(c.surface)),
+        background: Some(Background::Color(c.panel_bg)),
         border: border(c.border, 1.0, 16.0),
-        shadow: Shadow {
-            color: c.shadow,
-            offset: Vector::new(0.0, 6.0),
-            blur_radius: 18.0,
-        },
+        shadow: Shadow::default(),
     }
 }
 
-/// 卡片(接口列表项):更实的半透明底,稍小圆角。
+/// 卡片(接口列表项):略微不同的底色以形成层次。
 pub fn card(theme: &Theme) -> container::Style {
     let c = colors(is_dark(theme));
     container::Style {
         text_color: None,
-        background: Some(Background::Color(c.surface_strong)),
+        background: Some(Background::Color(c.card_bg)),
         border: border(c.border, 1.0, 12.0),
-        shadow: Shadow {
-            color: c.shadow,
-            offset: Vector::new(0.0, 3.0),
-            blur_radius: 10.0,
-        },
+        shadow: Shadow::default(),
     }
 }
 
@@ -177,51 +168,47 @@ pub fn card(theme: &Theme) -> container::Style {
 // 按钮
 // ---------------------------------------------------------------------------
 
-/// 主按钮:实心主题色、大圆角。
+/// 主按钮:实心主题色、大圆角,悬停/按下做纯色变化。
 pub fn button_primary(theme: &Theme, status: button::Status) -> button::Style {
     let dark = is_dark(theme);
     let c = colors(dark);
     let base = theme.palette().primary;
     let bg = match status {
-        button::Status::Pressed => base.scale_alpha(0.85),
-        button::Status::Hovered => base.scale_alpha(0.92),
+        button::Status::Hovered => c.primary_hover,
+        button::Status::Pressed => c.primary_pressed,
         _ => base,
     };
     let mut style = button::Style {
         background: Some(Background::Color(bg)),
         text_color: if dark { color(0x0D1220) } else { Color::WHITE },
         border: border(Color::TRANSPARENT, 0.0, 11.0),
-        shadow: Shadow {
-            color: c.shadow,
-            offset: Vector::new(0.0, 2.0),
-            blur_radius: 8.0,
-        },
+        shadow: Shadow::default(),
     };
     if matches!(status, button::Status::Disabled) {
-        style.background = Some(Background::Color(c.surface_strong));
+        style.background = Some(Background::Color(c.panel_bg));
         style.text_color = c.text_muted;
-        style.shadow = Shadow::default();
     }
     style
 }
 
-/// 幽灵按钮:半透明底 + 细边框,悬停强调主题色。
+/// 幽灵按钮:面板色底 + 细边框,悬停强调主题色。
 pub fn button_ghost(theme: &Theme, status: button::Status) -> button::Style {
     let c = colors(is_dark(theme));
     let primary = theme.palette().primary;
     let mut style = button::Style {
-        background: Some(Background::Color(c.surface)),
+        background: Some(Background::Color(c.panel_bg)),
         text_color: primary,
         border: border(c.border, 1.0, 11.0),
         shadow: Shadow::default(),
     };
     match status {
         button::Status::Hovered => {
-            style.background = Some(Background::Color(c.surface_strong));
+            style.background = Some(Background::Color(c.card_bg));
             style.border.color = c.border_focus;
         }
         button::Status::Pressed => {
-            style.background = Some(Background::Color(c.surface_strong));
+            style.background = Some(Background::Color(c.card_bg));
+            style.text_color = c.primary_pressed;
         }
         button::Status::Disabled => {
             style.text_color = c.text_muted;
@@ -235,12 +222,12 @@ pub fn button_ghost(theme: &Theme, status: button::Status) -> button::Style {
 // 输入框 / 下拉 / 复选框
 // ---------------------------------------------------------------------------
 
-/// 文本输入框:半透明底、圆角,聚焦时主题色描边。
+/// 文本输入框:面板色底、圆角,聚焦时主题色描边。
 pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let c = colors(is_dark(theme));
     let palette = theme.palette();
     let mut style = text_input::Style {
-        background: Background::Color(c.surface),
+        background: Background::Color(c.panel_bg),
         border: border(c.border, 1.0, 10.0),
         icon: c.text_muted,
         placeholder: c.text_muted,
@@ -249,7 +236,7 @@ pub fn input(theme: &Theme, status: text_input::Status) -> text_input::Style {
     };
     match status {
         text_input::Status::Focused => {
-            style.background = Background::Color(c.surface_strong);
+            style.background = Background::Color(c.card_bg);
             style.border.color = c.border_focus;
         }
         text_input::Status::Hovered => {
@@ -271,19 +258,20 @@ pub fn pick(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
         text_color: palette.text,
         placeholder_color: c.text_muted,
         handle_color: c.text_muted,
-        background: Background::Color(c.surface),
+        background: Background::Color(c.panel_bg),
         border: border(c.border, 1.0, 10.0),
     };
     match status {
         pick_list::Status::Hovered | pick_list::Status::Opened => {
-            style.background = Background::Color(c.surface_strong);
+            style.background = Background::Color(c.card_bg);
             style.border.color = c.border_focus;
         }
         pick_list::Status::Active => {}
     }
     style
 }
-/// 下拉菜单:圆角半透明浮层,选中项高亮。
+
+/// 下拉菜单:圆角浮层,选中项高亮。
 pub fn menu(theme: &Theme) -> iced::widget::overlay::menu::Style {
     let c = colors(is_dark(theme));
     let primary = theme.palette().primary;
@@ -310,9 +298,9 @@ pub fn check(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
     let bg = if checked {
         palette.primary
     } else if hovered {
-        c.surface_strong
+        c.card_bg
     } else {
-        c.surface
+        c.panel_bg
     };
     checkbox::Style {
         background: Background::Color(bg),
@@ -334,7 +322,7 @@ pub fn check(theme: &Theme, status: checkbox::Status) -> checkbox::Style {
 // 滚动区
 // ---------------------------------------------------------------------------
 
-/// 接口列表滚动区:半透明圆角底 + 柔和滚动条。
+/// 接口列表滚动区:圆角底 + 柔和滚动条。
 pub fn scroll(theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
     let c = colors(is_dark(theme));
     let rail = scrollable::Rail {
@@ -348,7 +336,7 @@ pub fn scroll(theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
     scrollable::Style {
         container: container::Style {
             text_color: None,
-            background: Some(Background::Color(c.surface)),
+            background: Some(Background::Color(c.panel_bg)),
             border: border(c.border, 1.0, 12.0),
             shadow: Shadow::default(),
         },
