@@ -1,4 +1,6 @@
-//! IPProbe 入口:配置 eframe 窗口并启动 egui 应用。
+//! IPProbe 入口:配置 Iced 应用并启动。
+//!
+//! 渲染采用 Iced 的 tiny-skia 软件渲染器,无需 GPU 上下文,内存占用极低。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -8,35 +10,36 @@ mod bark;
 mod netinfo;
 mod settings;
 mod tray;
-use eframe::egui;
 
-fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions {
-        // 界面使用显式加载的 CJK 字体,关闭系统字体自动收集(可省数百 MB 内存),
-        // 同时关闭系统字体回退,避免 eframe 的 MissingSystemFontsWarning 提示。
-        system_font_fallback: false,
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([720.0, 520.0])
-            .with_min_inner_size([520.0, 360.0])
-            .with_title(app::APP_TITLE),
-        ..Default::default()
-    };
+use iced::{Font, Size};
 
-    eframe::run_native(
-        app::APP_TITLE,
-        options,
-        Box::new(|cc| {
-            // 跟随 Windows 系统深浅色模式(浅色/深色自动切换)
-            cc.egui_ctx.set_theme(egui::ThemePreference::System);
-            setup_cjk_font(&cc.egui_ctx);
-            Ok(Box::new(app::IPProbeApp::default()))
-        }),
-    )
+fn main() -> iced::Result {
+    // 加载系统中文字体(体积最小者),保证中文界面正常显示。
+    let cjk = find_cjk_font();
+
+    let mut program = iced::application(app::APP_TITLE, app::State::update, app::State::view)
+        .theme(app::State::theme)
+        .subscription(app::State::subscription)
+        .window(iced::window::Settings {
+            size: Size::new(720.0, 520.0),
+            min_size: Some(Size::new(520.0, 360.0)),
+            // 关闭请求由应用层处理(缩到托盘),避免窗口直接被销毁。
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+
+    if let Some((bytes, family)) = cjk {
+        let family: &'static str = Box::leak(family.into_boxed_str());
+        program = program.font(bytes).default_font(Font::with_name(family));
+    }
+
+    program.run_with(app::State::new)
 }
 
-/// 加载系统中文字体,保证中文界面正常显示;找不到时回退 egui 默认字体。
-/// 优先选择体积最小的可用字体文件,减少常驻内存占用。
-fn setup_cjk_font(ctx: &egui::Context) {
+/// 查找系统中体积最小的可用 CJK 字体文件,返回 (字体字节, 家族名)。
+///
+/// 优先 Windows 自带字体;Linux 开发环境回退到常见开源 CJK 字体。
+fn find_cjk_font() -> Option<(Vec<u8>, String)> {
     const CANDIDATES: &[&str] = &[
         "C:\\Windows\\Fonts\\Deng.ttf",
         "C:\\Windows\\Fonts\\simhei.ttf",
@@ -45,7 +48,6 @@ fn setup_cjk_font(ctx: &egui::Context) {
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     ];
 
-    // 找出磁盘上存在且字节数最小的字体文件
     let mut best: Option<(std::path::PathBuf, u64)> = None;
     for path in CANDIDATES {
         if let Ok(meta) = std::fs::metadata(path) {
@@ -56,16 +58,31 @@ fn setup_cjk_font(ctx: &egui::Context) {
         }
     }
 
-    if let Some((path, _)) = best {
-        if let Ok(bytes) = std::fs::read(&path) {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts
-                .font_data
-                .insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(family).or_default().push("cjk".to_owned());
+    let (path, _) = best?;
+    let bytes = std::fs::read(&path).ok()?;
+    let family = font_family_name(&bytes)?;
+    Some((bytes, family))
+}
+
+/// 从 TTF/TTC 字体文件中提取家族名(优先 Windows 平台英文 locale)。
+fn font_family_name(data: &[u8]) -> Option<String> {
+    use ttf_parser::Face;
+    for index in 0..16 {
+        let Ok(face) = Face::parse(data, index) else {
+            break;
+        };
+        for name in face.names() {
+            if name.name_id == ttf_parser::name_id::FAMILY
+                && name.platform_id == ttf_parser::PlatformId::Windows
+                && name.language_id == 0x0409
+            {
+                if let Some(s) = name.to_string() {
+                    if !s.is_empty() {
+                        return Some(s);
+                    }
+                }
             }
-            ctx.set_fonts(fonts);
         }
     }
+    None
 }

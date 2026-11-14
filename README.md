@@ -1,6 +1,6 @@
 # IPProbe
 
-基于 Rust + egui(eframe) 的 Windows 桌面应用,自动探测本机全部网络接口的 IPv4 与 IPv6 地址。
+基于 Rust + Iced(0.13,tiny-skia 软件渲染) 的 Windows 桌面应用,自动探测本机全部网络接口的 IPv4 与 IPv6 地址。
 
 ## 功能
 
@@ -35,4 +35,4 @@ cargo run --release
 # 产物: target/release/IPProbe.exe
 ```
 
-技术栈: eframe 0.37(egui)、if-addrs 0.15、tray-icon 0.26、winreg 0.56、Rust 2021。
+技术栈: Iced 0.13(iced::application + tiny-skia/smol)、if-addrs 0.15、tray-icon 0.26、winreg 0.56、Rust 2021。

@@ -2,8 +2,6 @@
 //! 使用 tray-icon(Windows/macOS/Linux)与 muda 菜单库。
 //! 非 Windows 平台为降级空实现,便于跨平台编译。
 
-use eframe::egui;
-
 /// 托盘右键菜单的菜单项 ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayAction {
@@ -86,39 +84,6 @@ impl TrayController {
             Self { inner: () }
         }
     }
-
-    /// 处理托盘事件(菜单点击、左键点击等)。
-    /// 调用时应传入当前应用状态,返回需要执行的动作。
-    pub fn poll(&self) -> Option<TrayAction> {
-        #[cfg(windows)]
-        {
-            // 菜单事件(仅统计;菜单项点击会进入 MenuEvent 通道)
-            if let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
-                return match event.id.as_ref() {
-                    "show" => Some(TrayAction::Show),
-                    "quit" => Some(TrayAction::Quit),
-                    _ => None,
-                };
-            }
-            // 托盘点击事件(左键单击默认显示窗口)
-            if let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-                if let tray_icon::TrayIconEvent::Click {
-                    button: tray_icon::MouseButton::Left,
-                    ..
-                } = event
-                {
-                    return Some(TrayAction::Show);
-                }
-            }
-            None
-        }
-
-        #[cfg(not(windows))]
-        {
-            let _ = &self.inner;
-            None
-        }
-    }
 }
 
 impl Default for TrayController {
@@ -127,19 +92,33 @@ impl Default for TrayController {
     }
 }
 
-/// 在 egui 中请求显示窗口。
-pub fn show_main_window(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-}
+/// 轮询托盘事件(菜单点击与左键点击),返回需要执行的动作。
+///
+/// 在 Iced 的周期性订阅中调用(try_recv 非阻塞,适合高频轮询)。
+pub fn poll_action() -> Option<TrayAction> {
+    #[cfg(windows)]
+    {
+        if let Ok(event) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+            return match event.id.as_ref() {
+                "show" => Some(TrayAction::Show),
+                "quit" => Some(TrayAction::Quit),
+                _ => None,
+            };
+        }
+        if let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            if let tray_icon::TrayIconEvent::Click {
+                button: tray_icon::MouseButton::Left,
+                ..
+            } = event
+            {
+                return Some(TrayAction::Show);
+            }
+        }
+        None
+    }
 
-/// 在 egui 中隐藏窗口。
-pub fn hide_main_window(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-}
-
-/// 在 egui 中退出程序。
-/// 保留为公共 API;实际退出流程由托盘菜单触发。
-#[allow(dead_code)]
-pub fn quit_app(ctx: &egui::Context) {
-    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    #[cfg(not(windows))]
+    {
+        None
+    }
 }
