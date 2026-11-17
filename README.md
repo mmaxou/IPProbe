@@ -35,13 +35,56 @@
 
 ## 构建与运行
 
-```bash
-# 开发(WSL / Linux)
-cargo run
+要求:Rust 工具链(稳定版)。国内网络建议配置 rsproxy / 清华等镜像源。
 
-# Windows 原生
+### Windows
+
+```bash
+# Windows 原生(Rust MSVC)
 cargo run --release
 # 产物: target/release/IPProbe.exe
+```
+
+也可在 WSL 中交叉编译 Windows 版本:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+sudo apt install mingw-w64
+cargo build --release --target x86_64-pc-windows-gnu
+# 产物: target/x86_64-pc-windows-gnu/release/IPProbe.exe
+```
+
+### Linux(Debian / Ubuntu)
+
+先安装系统依赖(winit 窗口系统所需):
+
+```bash
+sudo apt install build-essential pkg-config \
+  libxcb1-dev libxkbcommon-dev \
+  libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-shm0-dev
+```
+
+然后构建:
+
+```bash
+cargo build --release
+# 产物: target/release/ipprobe
+```
+
+> 注意:开机自启动、关闭/最小化到托盘等 Windows 专属功能在 Linux/macOS 上暂不生效;
+> 界面、IP 探测与 Cloudflare DDNS 均可正常使用。
+
+### macOS
+
+```bash
+cargo build --release
+# 产物: target/release/ipprobe
+```
+
+### 运行测试
+
+```bash
+cargo test
 ```
 
 技术栈: Iced 0.13(iced::application + tiny-skia/smol)、if-addrs 0.15、tray-icon 0.26、winreg 0.56、Rust 2021。
