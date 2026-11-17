@@ -7,6 +7,7 @@
 mod app;
 mod autostart;
 mod bark;
+mod cloudflare;
 mod netinfo;
 mod settings;
 mod tray;

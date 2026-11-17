@@ -19,6 +19,15 @@
 - 最小化时隐藏到托盘:最小化后隐藏窗口,仅保留托盘图标
 - 设置持久化到 `%USERPROFILE%\.ipprobe\settings.json`
 
+### Cloudflare 动态解析(DDNS)
+
+- 自动把本机公网地址写入 Cloudflare DNS 记录:IPv6 → AAAA、IPv4 → A(均可单独开关)
+- 域名转发效果:访问 `nas.example.com` 即访问本机(需在路由器/ISP 侧放行对应端口)
+- 更新策略参考 ddns-go:仅当记录内容或代理状态变化时才调用 API,避免无效写入
+- 使用 Cloudflare API Token(需 `Zone → DNS → Edit` 权限),Token 保存在本地 `settings.json`
+- 支持 记录名称自动拼接主域、`@` 表示主域、TTL 选择(1=自动)、橙色云代理开关
+- 同步间隔默认 5 分钟,可在设置中调整,并提供“立即同步”按钮
+
 ### 系统托盘
 
 - 托盘图标 + 右键菜单(显示主窗口 / 退出)
@@ -36,3 +45,10 @@ cargo run --release
 ```
 
 技术栈: Iced 0.13(iced::application + tiny-skia/smol)、if-addrs 0.15、tray-icon 0.26、winreg 0.56、Rust 2021。
+
+### Cloudflare Token 创建步骤
+
+1. 登录 [Cloudflare 控制台](https://dash.cloudflare.com) → My Profile → API Tokens → Create Token
+2. 选择 “Edit zone DNS” 模板,Zone Resources 选对应域名(或 All zones)
+3. 生成 Token 后填入 IPProbe 设置 → Cloudflare 动态解析 → API Token
+4. 主域名填根域(如 `example.com`),记录名称填完整记录(如 `nas.example.com` 或子域 `nas`)

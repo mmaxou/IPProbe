@@ -76,6 +76,14 @@ impl ScanSummary {
     }
 }
 
+/// 取第一个全局公网 IPv6 地址(排除链路本地/唯一本地),用于 Cloudflare AAAA 同步。
+pub fn first_public_ipv6(ifaces: &[IfaceInfo]) -> Option<std::net::IpAddr> {
+    ifaces
+        .iter()
+        .flat_map(|intf| intf.addrs.iter())
+        .find(|a| a.scope == AddrScope::Public && a.addr.is_ipv6())
+        .map(|a| a.addr)
+}
 /// 枚举本机所有网络接口,按 (索引, 名称) 聚合地址。
 pub fn scan_interfaces() -> Result<Vec<IfaceInfo>, String> {
     let list = if_addrs::get_if_addrs().map_err(|e| e.to_string())?;
@@ -312,5 +320,28 @@ mod tests {
         let _ = scan_interfaces();
         let _ = outbound_ipv4();
         let _ = outbound_ipv6();
+    }
+
+    #[test]
+    fn first_public_ipv6_filters_link_local() {
+        let ifaces = vec![IfaceInfo {
+            name: "eth0".to_owned(),
+            index: 1,
+            is_up: true,
+            addrs: vec![
+                IfaceAddr {
+                    addr: "fe80::1".parse().unwrap(),
+                    scope: AddrScope::LinkLocal,
+                },
+                IfaceAddr {
+                    addr: "240e:3a4::1".parse().unwrap(),
+                    scope: AddrScope::Public,
+                },
+            ],
+        }];
+        assert_eq!(
+            first_public_ipv6(&ifaces).unwrap().to_string(),
+            "240e:3a4::1"
+        );
     }
 }

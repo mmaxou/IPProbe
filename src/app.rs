@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{button, checkbox, column, container, pick_list, row, scrollable, text, text_input, Column, Space};
 use iced::{Element, Length, Subscription, Task, Theme};
 
+use crate::cloudflare;
 use crate::netinfo::{self, AddrScope, IfaceInfo, ScanSummary};
 use crate::settings::{self, AppSettings};
 use crate::tray::{TrayAction, TrayController};
@@ -20,6 +21,29 @@ const BARK_HOURS: [u32; 24] = [
 const BARK_MINUTES: [u32; 12] = [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55];
 
 /// 应用消息。
+const CF_INTERVAL_CHOICES: [u64; 4] = [60, 300, 600, 1800];
+const CF_TTL_CHOICES: [TtlChoice; 7] = [
+    TtlChoice { secs: 1, label: "自动" },
+    TtlChoice { secs: 120, label: "2 分钟" },
+    TtlChoice { secs: 300, label: "5 分钟" },
+    TtlChoice { secs: 600, label: "10 分钟" },
+    TtlChoice { secs: 1800, label: "30 分钟" },
+    TtlChoice { secs: 3600, label: "1 小时" },
+    TtlChoice { secs: 86400, label: "24 小时" },
+];
+
+/// Cloudflare TTL 下拉项(1 = 自动)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TtlChoice {
+    secs: u64,
+    label: &'static str,
+}
+
+impl std::fmt::Display for TtlChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)
+    }
+}
 #[derive(Debug, Clone)]
 pub enum Message {
     /// 周期心跳(用于自动刷新、静默探测、Bark 定时与系统主题检测)。
@@ -60,6 +84,26 @@ pub enum Message {
     BarkMinuteChanged(u32),
     /// 发送 Bark 测试通知。
     BarkTestSend,
+    /// Cloudflare 动态解析开关。
+    ToggleCfEnabled(bool),
+    /// Cloudflare API Token 输入。
+    CfTokenChanged(String),
+    /// Cloudflare 主域名输入。
+    CfZoneChanged(String),
+    /// Cloudflare 记录名称输入。
+    CfRecordChanged(String),
+    /// Cloudflare IPv4(A 记录)开关。
+    ToggleCfV4(bool),
+    /// Cloudflare IPv6(AAAA 记录)开关。
+    ToggleCfV6(bool),
+    /// Cloudflare 橙色云代理开关。
+    ToggleCfProxied(bool),
+    /// Cloudflare TTL 变化。
+    CfTtlChanged(u64),
+    /// Cloudflare 同步间隔变化。
+    CfIntervalChanged(u64),
+    /// 立即执行一次 Cloudflare 同步。
+    CfSyncNow,
 }
 
 /// 应用状态。
@@ -92,6 +136,14 @@ pub struct State {
     last_bark_date: Option<String>,
     /// Bark 最近一次发送/测试结果。
     bark_feedback: Option<String>,
+    /// Cloudflare 上次同步时间(用于节流)。
+    last_cf_sync: Option<Instant>,
+    /// Cloudflare 后台同步线程的结果接收端。
+    cf_rx: Option<std::sync::mpsc::Receiver<Result<cloudflare::SyncReport, String>>>,
+    /// 是否正在执行 Cloudflare 同步。
+    cf_syncing: bool,
+    /// Cloudflare 最近一次同步结果展示文本。
+    cf_feedback: Option<String>,
     /// 当前主题(跟随系统深浅色)。
     theme: Theme,
 }
@@ -118,6 +170,10 @@ impl State {
             last_silent_scan: None,
             last_bark_date: None,
             bark_feedback: None,
+            last_cf_sync: None,
+            cf_rx: None,
+            cf_syncing: false,
+            cf_feedback: None,
             theme: Theme::default(),
         };
         app.sync_autostart_on_startup();
@@ -358,6 +414,76 @@ impl State {
         }
     }
 
+    /// 用于 Cloudflare 同步的公网 IPv4:外部 API 优先;回退到出口地址(私网则丢弃)。
+    fn ddns_ipv4(&self) -> Option<String> {
+        if let Some(p) = &self.public_v4 {
+            return Some(p.clone());
+        }
+        let v4 = self.outbound_v4?.to_string();
+        let public = v4
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|a| !a.is_private());
+        public.then_some(v4)
+    }
+
+    /// 用于 Cloudflare 同步的公网 IPv6:出口地址优先;回退接口上的全局公网地址。
+    fn ddns_ipv6(&self) -> Option<String> {
+        if let Some(v6) = self.outbound_v6 {
+            return Some(v6.to_string());
+        }
+        netinfo::first_public_ipv6(&self.ifaces).map(|a| a.to_string())
+    }
+
+    /// 每次心跳调用:取回后台同步结果,并在到达间隔时启动新一轮同步。
+    fn maybe_cf_sync(&mut self) {
+        if !self.settings.cloudflare.enabled && self.cf_rx.is_none() {
+            return;
+        }
+        if let Some(res) = self.cf_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.cf_syncing = false;
+            self.cf_feedback = Some(match res {
+                Ok(report) => report.render(),
+                Err(e) => e,
+            });
+            self.cf_rx = None;
+        }
+        let interval = Duration::from_secs(self.settings.cloudflare.interval_secs.max(60));
+        let due = self.last_cf_sync.is_none_or(|t| t.elapsed() >= interval);
+        if due {
+            self.start_cf_sync();
+        }
+    }
+
+    /// 立即启动一次 Cloudflare 同步(后台线程,不阻塞界面)。
+    fn start_cf_sync(&mut self) {
+        if self.cf_syncing {
+            return;
+        }
+        let cfg = self.settings.cloudflare.clone();
+        let ipv4 = self.ddns_ipv4();
+        let ipv6 = self.ddns_ipv6();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = cloudflare::sync(&cfg, ipv4, ipv6);
+            let _ = tx.send(result);
+        });
+        self.cf_rx = Some(rx);
+        self.cf_syncing = true;
+        self.last_cf_sync = Some(Instant::now());
+    }
+
+    /// 主界面状态栏中的 Cloudflare 摘要(未启用返回 None)。
+    fn cf_status_text(&self) -> Option<String> {
+        if !self.settings.cloudflare.enabled {
+            return None;
+        }
+        if self.cf_syncing {
+            return Some("Cloudflare 同步中…".to_owned());
+        }
+        self.cf_feedback
+            .as_ref()
+            .map(|f| format!("Cloudflare: {f}"))
+    }
     /// 汇总探测到的所有 IP 地址。
     fn collect_ips_text(&self) -> String {
         let mut lines = Vec::new();
@@ -411,6 +537,7 @@ impl State {
                 self.sync_theme();
                 self.maybe_silent_probe();
                 self.maybe_bark_report();
+                self.maybe_cf_sync();
                 Task::none()
             }
 
@@ -529,6 +656,46 @@ impl State {
                 );
                 Task::none()
             }
+            Message::ToggleCfEnabled(v) => {
+                self.settings.cloudflare.enabled = v;
+                Task::none()
+            }
+            Message::CfTokenChanged(v) => {
+                self.settings.cloudflare.token = v;
+                Task::none()
+            }
+            Message::CfZoneChanged(v) => {
+                self.settings.cloudflare.zone = v;
+                Task::none()
+            }
+            Message::CfRecordChanged(v) => {
+                self.settings.cloudflare.record_name = v;
+                Task::none()
+            }
+            Message::ToggleCfV4(v) => {
+                self.settings.cloudflare.ipv4_enabled = v;
+                Task::none()
+            }
+            Message::ToggleCfV6(v) => {
+                self.settings.cloudflare.ipv6_enabled = v;
+                Task::none()
+            }
+            Message::ToggleCfProxied(v) => {
+                self.settings.cloudflare.proxied = v;
+                Task::none()
+            }
+            Message::CfTtlChanged(v) => {
+                self.settings.cloudflare.ttl = v;
+                Task::none()
+            }
+            Message::CfIntervalChanged(v) => {
+                self.settings.cloudflare.interval_secs = v;
+                Task::none()
+            }
+            Message::CfSyncNow => {
+                self.start_cf_sync();
+                Task::none()
+            }
         }
     }
 
@@ -581,24 +748,30 @@ impl State {
             .map(|a| a.to_string())
             .unwrap_or_else(|| "无".to_owned());
 
-        let bottom_text = if let Some(e) = &self.scan_error {
-            format!(
-                "接口 {} | 启动 {} | IPv4 {} | IPv6 {} | 默认出口: IPv4 {v4} · IPv6 {v6} | 上次扫描 {} | 扫描出错: {e}",
-                self.summary.iface_count,
-                self.summary.up_count,
-                self.summary.ipv4_count,
-                self.summary.ipv6_count,
-                self.last_scan_text()
-            )
-        } else {
-            format!(
-                "接口 {} | 启动 {} | IPv4 {} | IPv6 {} | 默认出口: IPv4 {v4} · IPv6 {v6} | 上次扫描 {}",
-                self.summary.iface_count,
-                self.summary.up_count,
-                self.summary.ipv4_count,
-                self.summary.ipv6_count,
-                self.last_scan_text()
-            )
+        let bottom_text = {
+            let base = if let Some(e) = &self.scan_error {
+                format!(
+                    "接口 {} | 启动 {} | IPv4 {} | IPv6 {} | 默认出口: IPv4 {v4} · IPv6 {v6} | 上次扫描 {} | 扫描出错: {e}",
+                    self.summary.iface_count,
+                    self.summary.up_count,
+                    self.summary.ipv4_count,
+                    self.summary.ipv6_count,
+                    self.last_scan_text()
+                )
+            } else {
+                format!(
+                    "接口 {} | 启动 {} | IPv4 {} | IPv6 {} | 默认出口: IPv4 {v4} · IPv6 {v6} | 上次扫描 {}",
+                    self.summary.iface_count,
+                    self.summary.up_count,
+                    self.summary.ipv4_count,
+                    self.summary.ipv6_count,
+                    self.last_scan_text()
+                )
+            };
+            match self.cf_status_text() {
+                Some(s) => format!("{base} | {s}"),
+                None => base,
+            }
         };
         let bottom = container(text(bottom_text).size(12))
             .width(Length::Fill)
@@ -813,6 +986,97 @@ impl State {
             content = content.push(text(feedback).size(13));
         }
 
+        // Cloudflare 动态解析(DDNS)
+        let cf = column![
+            text("Cloudflare 动态解析(DDNS)").size(16),
+            row![
+                checkbox("启用自动同步", self.settings.cloudflare.enabled)
+                    .on_toggle(Message::ToggleCfEnabled)
+                    .style(crate::ui::check),
+                text("同步间隔"),
+                pick_list(
+                    CF_INTERVAL_CHOICES,
+                    Some(self.settings.cloudflare.interval_secs),
+                    Message::CfIntervalChanged
+                )
+                .style(crate::ui::pick)
+                .menu_style(crate::ui::menu),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                text("API Token"),
+                text_input("在 Cloudflare 后台创建的 API Token", &self.settings.cloudflare.token)
+                    .secure(true)
+                    .on_input(Message::CfTokenChanged)
+                    .width(Length::Fill)
+                    .style(crate::ui::input),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                text("主域名"),
+                text_input("example.com", &self.settings.cloudflare.zone)
+                    .on_input(Message::CfZoneChanged)
+                    .width(Length::Fill)
+                    .style(crate::ui::input),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                text("记录名称"),
+                text_input("nas.example.com(或 @)", &self.settings.cloudflare.record_name)
+                    .on_input(Message::CfRecordChanged)
+                    .width(Length::Fill)
+                    .style(crate::ui::input),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            row![
+                checkbox("IPv4(A 记录)", self.settings.cloudflare.ipv4_enabled)
+                    .on_toggle(Message::ToggleCfV4)
+                    .style(crate::ui::check),
+                checkbox("IPv6(AAAA 记录)", self.settings.cloudflare.ipv6_enabled)
+                    .on_toggle(Message::ToggleCfV6)
+                    .style(crate::ui::check),
+            ]
+            .spacing(20)
+            .align_y(iced::Alignment::Center),
+            row![
+                checkbox("橙色云代理(proxied)", self.settings.cloudflare.proxied)
+                    .on_toggle(Message::ToggleCfProxied)
+                    .style(crate::ui::check),
+                text("TTL"),
+                pick_list(
+                    CF_TTL_CHOICES,
+                    CF_TTL_CHOICES
+                        .iter()
+                        .copied()
+                        .find(|c| c.secs == self.settings.cloudflare.ttl),
+                    |c| Message::CfTtlChanged(c.secs)
+                )
+                .style(crate::ui::pick)
+                .menu_style(crate::ui::menu),
+                button("立即同步")
+                    .on_press(Message::CfSyncNow)
+                    .style(crate::ui::button_ghost),
+            ]
+            .spacing(10)
+            .align_y(iced::Alignment::Center),
+            text("提示: Token 需具备 Zone → DNS → Edit 权限;免费套餐的 AAAA 记录不支持开启代理。")
+                .size(12),
+        ]
+        .spacing(12);
+        content = content.push(
+            container(cf)
+                .width(Length::Fill)
+                .padding([16, 18])
+                .style(crate::ui::panel),
+        );
+
+        if let Some(feedback) = &self.cf_feedback {
+            content = content.push(text(format!("Cloudflare: {feedback}")).size(13));
+        }
         content = content.push(Space::with_height(8));
 
         let actions = row![
