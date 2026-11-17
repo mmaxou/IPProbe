@@ -23,13 +23,12 @@ fn main() -> iced::Result {
         .theme(app::State::theme)
         .subscription(app::State::subscription)
         .window(iced::window::Settings {
-            size: Size::new(720.0, 520.0),
-            min_size: Some(Size::new(520.0, 360.0)),
+            size: Size::new(920.0, 640.0),
+            min_size: Some(Size::new(680.0, 480.0)),
             // 关闭请求由应用层处理(缩到托盘),避免窗口直接被销毁。
             exit_on_close_request: false,
             ..Default::default()
         });
-
     if let Some((bytes, family)) = cjk {
         let family: &'static str = Box::leak(family.into_boxed_str());
         program = program.font(bytes).default_font(Font::with_name(family));

@@ -1089,9 +1089,18 @@ impl State {
         ]
         .spacing(12);
 
-        content = content.push(actions);
+        // 主体内容可滚动,避免窗口较小时面板被截断;按钮固定在底部。
+        let scroller = scrollable(content)
+            .height(Length::Fill)
+            .style(crate::ui::scroll);
 
-        container(content)
+        let layout = Column::new()
+            .spacing(10)
+            .push(scroller)
+            .push(actions)
+            .padding(16);
+
+        container(layout)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(crate::ui::root)
