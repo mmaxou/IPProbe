@@ -3,7 +3,7 @@ name = "ipprobe"
 version = "0.1.0"
 edition = "2021"
 description = "IPProbe - 自动探测本机 IPv4/IPv6 地址的 Windows 桌面应用(Iced)"
-license = "MIT"
+license = "Apache-2.0"
 
 [[bin]]
 name = "IPProbe"

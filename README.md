@@ -52,3 +52,13 @@ cargo run --release
 2. 选择 “Edit zone DNS” 模板,Zone Resources 选对应域名(或 All zones)
 3. 生成 Token 后填入 IPProbe 设置 → Cloudflare 动态解析 → API Token
 4. 主域名填根域(如 `example.com`),记录名称填完整记录(如 `nas.example.com` 或子域 `nas`)
+
+---
+
+## 致谢
+
+感谢 [Linux Do](https://linux.do) 社区的交流与支持。
+
+## License
+
+[Apache License 2.0](LICENSE)
